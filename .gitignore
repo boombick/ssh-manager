@@ -1,0 +1,8 @@
+.build/
+.claude
+.swiftpm/
+SSHManager.app/
+*.xcodeproj/
+DerivedData/
+.DS_Store
+*.pkg
