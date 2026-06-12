@@ -133,7 +133,7 @@ final class TunnelEngine {
         p.standardOutput = logHandle ?? FileHandle.nullDevice
         p.terminationHandler = { [weak self] proc in
             let code = proc.terminationStatus
-            DispatchQueue.main.async { self?.handleTermination(exitCode: code) }
+            DispatchQueue.main.async { self?.handleTermination(of: proc, exitCode: code) }
         }
 
         writeLog("starting: /usr/bin/ssh \(plan.sshArgs.joined(separator: " "))")
@@ -167,6 +167,7 @@ final class TunnelEngine {
                 // Tear down ssh + SOCKS so we don't leave a half-up tunnel.
                 manuallyStopped = true   // suppress termination-handler retry; we retry here ourselves.
                 process?.terminate()
+                process = nil
                 proxy.stop()
                 self.proxy = nil
                 successUptimeTimer?.cancel(); successUptimeTimer = nil
@@ -211,7 +212,10 @@ final class TunnelEngine {
 
     // MARK: - Private
 
-    private func handleTermination(exitCode: Int32) {
+    private func handleTermination(of proc: Process, exitCode: Int32) {
+        // Осиротевший обработчик от процесса, который мы уже «списали» в
+        // путях сбоя (см. handleProxyFailure): текущий запуск его не касается.
+        guard proc === process else { return }
         writeLog("ssh exited with code \(exitCode)")
         proxy?.stop()
         proxy = nil
@@ -247,6 +251,7 @@ final class TunnelEngine {
         writeLog("proxy listener failed: \(error.localizedDescription)")
         manuallyStopped = true   // suppress "ssh exited" failure message; the proxy failed first
         process?.terminate()
+        process = nil
         proxy?.stop()
         proxy = nil
         httpProxy?.stop()
@@ -301,6 +306,7 @@ final class TunnelEngine {
         writeLog("http proxy listener failed: \(error.localizedDescription)")
         manuallyStopped = true
         process?.terminate()
+        process = nil
         proxy?.stop(); proxy = nil
         httpProxy?.stop(); httpProxy = nil
         actualHttpProxyPort = nil
