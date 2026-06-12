@@ -502,10 +502,24 @@ final class TunnelEngine {
 
     // MARK: - Logging
 
+    private static let maxLogBytes: UInt64 = 1 * 1024 * 1024
+
     private func openLogFile() {
         let logURL = Paths.logFile(for: connection.id)
-        FileManager.default.createFile(atPath: logURL.path, contents: nil)
-        logHandle = try? FileHandle(forWritingTo: logURL)
+        let fm = FileManager.default
+
+        // Ротация: при превышении лимита начинаем файл заново, иначе дописываем —
+        // чтобы лог не стирался на каждом старте/попытке реконнекта.
+        if let size = (try? fm.attributesOfItem(atPath: logURL.path))?[.size] as? UInt64,
+           size > TunnelEngine.maxLogBytes {
+            try? fm.removeItem(at: logURL)
+        }
+        if !fm.fileExists(atPath: logURL.path) {
+            fm.createFile(atPath: logURL.path, contents: nil)
+        }
+        let handle = try? FileHandle(forWritingTo: logURL)
+        try? handle?.seekToEnd()
+        logHandle = handle
     }
 
     private func closeLog() {
