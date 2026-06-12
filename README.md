@@ -1,63 +1,76 @@
 # SSH Manager
 
-Menu bar app for macOS that manages persistent SSH tunnels.
+Менеджер SSH-туннелей для macOS, живущий в строке меню. Поднимает и держит туннели `-D` (SOCKS), `-L` (локальный форвард) и `-R` (обратный форвард), переподключается при обрывах, считает трафик и пинг, хранит историю и рисует по ней графики.
 
-## Status
+<p align="center">
+  <img src="docs/img/menu.png" alt="Меню в строке состояния" width="420">
+</p>
 
-A working menu-bar SSH tunnel manager. Features:
+## Возможности
 
-- Start/stop each tunnel from the menu bar
-- Editor UI for connections (add/edit/remove without hand-editing JSON)
-- Supports `-D` (dynamic / SOCKS), `-L` (local forward), `-R` (remote forward)
-- Per-tunnel byte counters (in-process proxy layer)
-- TCP ping monitoring of each target
-- Auto-reconnect with exponential backoff (2s–60s, up to 20 attempts)
-- Persistent stats / history (SQLite) with charts
-- Open at login (via `SMAppService`)
-- Optional HTTP CONNECT proxy for SOCKS (`-D`) tunnels
-- Logs ssh stderr per connection
+- **Три типа туннелей:** SOCKS-прокси (`-D`), проброс локального порта на удалённый сервис (`-L`), проброс локального сервиса наружу (`-R`).
+- **Авто-переподключение** с нарастающей паузой (2, 5, 10, 20, 30, 60 секунд), до 20 попыток. Кнопка «Retry now» пропускает ожидание.
+- **Счётчики трафика** по каждому туннелю. Встроенный TCP-прокси считает байты в обе стороны (сам ssh этих цифр не даёт).
+- **Мониторинг задержки:** TCP-проба до ssh-порта раз в 10 секунд. ICMP не нужен — бастионы часто режут пинг, но пускают SSH.
+- **История и графики:** задержка, пропускная способность, аптайм и список событий за период от часа до 30 дней (SQLite).
+- **HTTP-прокси** поверх SOCKS-туннеля: метод `CONNECT` для приложений, которые не умеют SOCKS.
+- **Запуск при входе** через `SMAppService`.
+- **Авто-старт** выбранных туннелей при запуске приложения.
+- **Редактор соединений** в окне плюс правка `config.json` вручную с перечитыванием по кнопке.
 
-## Build
+## Скриншоты
 
-```sh
-./scripts/build-app.sh          # produces ./SSHManager.app
-open ./SSHManager.app
-```
+<p align="center">
+  <img src="docs/img/window.png" alt="Окно управления соединениями" width="720">
+</p>
 
-You need Swift 6.0+ (comes with Xcode or Command Line Tools).
-No external dependencies. The build is ad-hoc code-signed for local use.
+<p align="center">
+  <img src="docs/img/edit.png" alt="Редактор соединения" width="520">
+  <img src="docs/img/stats.png" alt="Статистика и графики" width="720">
+</p>
 
-## Sharing
+## Установка
 
-```sh
-./scripts/build-pkg.sh          # produces SSHManager-<version>.pkg
-```
+### Из готового пакета
 
-The package installs the app into `/Applications`. Because the .pkg and the
-.app are signed ad-hoc (not with an Apple Developer ID), Gatekeeper will
-refuse to open them on a normal double-click on the recipient's Mac.
+Скачайте `SSHManager-<версия>.pkg` из раздела [Releases](https://github.com/boombick/ssh-manager/releases) и установите.
 
-**Tell the recipient to do this once:**
-1. Right-click the `.pkg` → **Open**, then confirm. This installs the app.
-2. After install, right-click `/Applications/SSHManager.app` → **Open**.
+Пакет и приложение подписаны ad-hoc (без Apple Developer ID), поэтому Gatekeeper не даст открыть их двойным кликом. Один раз обойдите это так:
 
-Or, in Terminal, in one shot:
+1. Правый клик по `.pkg` → **Open**, подтвердите. Это установит приложение в `/Applications`.
+2. Правый клик по `/Applications/SSHManager.app` → **Open**.
+
+Или одной командой в терминале после установки:
 
 ```sh
 xattr -dr com.apple.quarantine /Applications/SSHManager.app
 open /Applications/SSHManager.app
 ```
 
-## Configuration
+### Сборка из исходников
 
-On first launch the app creates an empty config at:
+Нужен Swift 6.0+ (входит в Xcode или Command Line Tools). Внешних зависимостей нет.
+
+```sh
+./scripts/build-app.sh     # соберёт ./SSHManager.app
+open ./SSHManager.app
+```
+
+Собрать установочный пакет:
+
+```sh
+./scripts/build-pkg.sh     # соберёт SSHManager-<версия>.pkg
+```
+
+## Настройка
+
+При первом запуске создаётся пустой конфиг:
 
     ~/Library/Application Support/SSHManager/config.json
 
-Open it via the menu (**Edit config.json…**) and add entries. Then click
-**Reload Config**.
+Добавляйте соединения через окно (**Manage Connections…**) или правьте файл руками (**Edit config.json…**), затем нажмите **Reload Config**.
 
-### Schema
+### Пример config.json
 
 ```json
 [
@@ -105,38 +118,40 @@ Open it via the menu (**Edit config.json…**) and add entries. Then click
 ]
 ```
 
-### Field reference
+### Поля
 
-| Field | Required | Notes |
+| Поле | Обязательное | Описание |
 |---|---|---|
-| `id` | yes | Any UUID; used as a stable key (and log file name) |
-| `name` | yes | Shown in the menu |
-| `type` | yes | `dynamic`, `local`, or `remote` |
-| `host` | yes | SSH target hostname |
-| `sshPort` | yes | Usually 22 |
-| `user` | yes | SSH user |
-| `identityFile` | no | Optional, `~/` is expanded. If absent, ssh's default key search is used. |
-| `listenPort` | yes | Local port to bind (or remote port for `-R`) |
-| `remoteHost` | only `-L`, `-R` | Target host as seen from the remote (or local, for `-R`) side |
-| `remotePort` | only `-L`, `-R` | Target port |
-| `autoReconnect` | yes | Reconnect automatically with backoff (2s–60s), up to 20 attempts |
-| `autoStart` | yes | If true, start when the app launches |
-| `extraOptions` | yes | Extra `ssh -o` strings, e.g. `"TCPKeepAlive=yes"` (no leading `-o`) |
+| `id` | да | Любой UUID. Стабильный ключ и имя файла лога |
+| `name` | да | Имя в меню |
+| `type` | да | `dynamic`, `local` или `remote` |
+| `host` | да | Хост SSH-сервера |
+| `sshPort` | да | Обычно 22 |
+| `user` | да | Пользователь SSH |
+| `identityFile` | нет | Путь к ключу, `~/` раскрывается. Без него работает обычный поиск ключей ssh и ssh-agent |
+| `listenPort` | да | Локальный порт (для `-R` — порт на удалённой стороне) |
+| `remoteHost` | для `-L`, `-R` | Целевой хост со стороны сервера (для `-R` — со стороны клиента) |
+| `remotePort` | для `-L`, `-R` | Целевой порт |
+| `autoReconnect` | да | Переподключение с паузой 2–60 с, до 20 попыток |
+| `autoStart` | да | Запускать туннель при старте приложения |
+| `extraOptions` | да | Дополнительные `ssh -o`, например `"TCPKeepAlive=yes"` (без ведущего `-o`) |
+| `httpProxyEnabled` | нет | Только для `dynamic`: поднять HTTP CONNECT-прокси рядом с SOCKS |
+| `httpProxyPort` | нет | Порт HTTP-прокси. Пусто — подбирается автоматически от `listenPort + 1` |
 
-## Authentication
+## Аутентификация
 
-The app shells out to `/usr/bin/ssh` with `BatchMode=yes`. That means **no password
-prompts** — auth must work non-interactively. In practice:
+Приложение запускает `/usr/bin/ssh` с `BatchMode=yes` — паролей оно не спрашивает, аутентификация должна проходить без интерактива:
 
-- public-key auth via `~/.ssh/id_*` or an explicit `identityFile`
-- keys loaded into `ssh-agent` (the agent is inherited from launch)
+- ключи `~/.ssh/id_*` или явный `identityFile`;
+- ключи в `ssh-agent` (агент наследуется при запуске).
 
-If a tunnel fails immediately on start, open the log folder via the menu and
-check `<connection-id>.log`.
+Если туннель падает сразу после старта, откройте папку логов из меню (**Open Logs Folder**) и посмотрите `<id-соединения>.log`.
 
-## How it works
+## Как это устроено
 
-For each connection the app spawns `/usr/bin/ssh` with appropriate flags:
+На каждый туннель приложение запускает `/usr/bin/ssh` и поднимает рядом маленький TCP-прокси. Пользовательский порт слушает прокси, а ssh переносится на тот же порт со сдвигом `+10000` на loopback. Так приложение видит объём трафика, который сам ssh не сообщает.
+
+Пример команды для SOCKS-туннеля:
 
 ```
 /usr/bin/ssh -N -T \
@@ -144,40 +159,39 @@ For each connection the app spawns `/usr/bin/ssh` with appropriate flags:
   -o ServerAliveInterval=15 \
   -o ServerAliveCountMax=3 \
   -o ExitOnForwardFailure=yes \
-  -D 1080 \
+  -D 11080 \
   -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes \
   -p 22 \
   root@bastion.example.com
 ```
 
-The child process lives as long as the menu bar shows it green. When the user
-toggles it off the app sends `SIGTERM`. If ssh dies on its own (server timeout,
-network drop, auth failure) and `autoReconnect` is enabled, the menu item shows
-a reconnecting state and the app retries with exponential backoff (2s–60s, up to
-20 attempts); you can stop it at any time. If `autoReconnect` is off, the item
-turns to `⚠` and stays stopped.
+Зелёный кружок — туннель работает, жёлтый — переподключение, красный — ошибка. Если ssh умирает (таймаут, обрыв сети, отказ аутентификации) и включён `autoReconnect`, приложение повторяет попытки по нарастающему расписанию; иначе помечает соединение как упавшее.
 
-## Files & directories
+Прокси-слушатели привязаны только к `127.0.0.1`, наружу в локальную сеть они не открыты.
+
+## Файлы
 
 ```
 ~/Library/Application Support/SSHManager/
-  config.json                  ← edited by you (or, later, the UI)
-  logs/<connection-id>.log     ← ssh stderr per run
+  config.json                  ← соединения (правится вами или через UI)
+  history.db                   ← история задержки/трафика/событий (SQLite)
+  logs/<id-соединения>.log     ← stderr ssh по каждому запуску
 ```
 
-## Project layout
+## Структура проекта
 
 ```
 Package.swift
 Resources/Info.plist
 scripts/build-app.sh
+scripts/build-pkg.sh
 Sources/SSHManager/
   main.swift
   AppDelegate.swift
   Models/Connection.swift
-  Storage/Paths.swift
-  Storage/ConfigStore.swift
-  Tunnel/TunnelEngine.swift
-  Tunnel/TunnelSupervisor.swift
-  UI/MenuBarController.swift
+  Storage/            Paths, ConfigStore, LoginItem
+  Tunnel/             TunnelEngine, TunnelSupervisor, ProxyServer, HttpProxyServer, PingMonitor
+  History/            Database, HistoryStore
+  UI/                 MenuBarController, MainWindowController, ConnectionListView, ConnectionEditView, StatsView
+Tests/SSHManagerTests/
 ```
