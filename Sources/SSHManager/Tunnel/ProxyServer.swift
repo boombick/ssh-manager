@@ -89,8 +89,9 @@ final class ProxyServer {
         client.start(queue: queue)
         target.start(queue: queue)
 
-        pump(from: client, to: target, direction: .proxyToTarget)
-        pump(from: target, to: client, direction: .targetToProxy)
+        let pair = PumpPair()
+        pump(from: client, to: target, direction: .proxyToTarget, pair: pair)
+        pump(from: target, to: client, direction: .targetToProxy, pair: pair)
     }
 
     private enum Direction {
@@ -98,9 +99,13 @@ final class ProxyServer {
         case targetToProxy
     }
 
+    /// Tracks how many of the two pump directions for a connection-pair have
+    /// finished. Only touched on the proxy `queue`, so no locking is needed.
+    private final class PumpPair { var finished = 0 }
+
     /// Recursive read-then-forward loop. Each `receive` callback is dispatched on the proxy queue,
     /// so recursion does not grow the call stack.
-    private func pump(from src: NWConnection, to dst: NWConnection, direction: Direction) {
+    private func pump(from src: NWConnection, to dst: NWConnection, direction: Direction, pair: PumpPair) {
         src.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, isComplete, error in
             if let data, !data.isEmpty {
                 switch direction {
@@ -118,6 +123,11 @@ final class ProxyServer {
                          contentContext: .finalMessage,
                          isComplete: true,
                          completion: .contentProcessed { _ in })
+                pair.finished += 1
+                if pair.finished == 2 {
+                    src.cancel()
+                    dst.cancel()
+                }
                 return
             }
 
@@ -127,7 +137,7 @@ final class ProxyServer {
                 return
             }
 
-            self?.pump(from: src, to: dst, direction: direction)
+            self?.pump(from: src, to: dst, direction: direction, pair: pair)
         }
     }
 }

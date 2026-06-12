@@ -287,8 +287,9 @@ final class HttpProxyServer {
             if !leftover.isEmpty {
                 socks.send(content: leftover, completion: .contentProcessed { _ in })
             }
-            self.splice(a: client, b: socks)
-            self.splice(a: socks, b: client)
+            let pair = SplicePair()
+            self.splice(a: client, b: socks, pair: pair)
+            self.splice(a: socks, b: client, pair: pair)
         })
     }
 
@@ -317,20 +318,28 @@ final class HttpProxyServer {
 
     // MARK: - Splice + helpers
 
+    /// Tracks how many of the two splice directions for a connection-pair have
+    /// finished. Only touched on the proxy `queue`, so no locking is needed.
+    private final class SplicePair { var finished = 0 }
+
     /// Recursive read-and-forward, mirroring ProxyServer.pump.
-    private func splice(a: NWConnection, b: NWConnection) {
+    private func splice(a: NWConnection, b: NWConnection, pair: SplicePair) {
         a.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, isComplete, error in
             if let data, !data.isEmpty {
                 b.send(content: data, completion: .contentProcessed { _ in })
             }
             if isComplete {
                 b.send(content: nil, contentContext: .finalMessage, isComplete: true, completion: .contentProcessed { _ in })
+                pair.finished += 1
+                if pair.finished == 2 {
+                    a.cancel(); b.cancel()
+                }
                 return
             }
             if error != nil {
                 a.cancel(); b.cancel(); return
             }
-            self?.splice(a: a, b: b)
+            self?.splice(a: a, b: b, pair: pair)
         }
     }
 
