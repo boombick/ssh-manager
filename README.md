@@ -4,18 +4,18 @@ Menu bar app for macOS that manages persistent SSH tunnels.
 
 ## Status
 
-**Phase 1 (current)** — minimal working tray app:
-- Reads connections from `~/Library/Application Support/SSHManager/config.json`
-- Start/stop each tunnel from the menu bar
-- Logs ssh stderr per connection
-- Supports `-D` (dynamic / SOCKS), `-L` (local forward), `-R` (remote forward)
+A working menu-bar SSH tunnel manager. Features:
 
-**Not yet:**
-- Editor UI (you edit `config.json` by hand, then "Reload Config")
-- Byte counters (proxy layer)
-- Auto-reconnect with backoff
-- Persistent stats / history
-- LaunchAgent autostart
+- Start/stop each tunnel from the menu bar
+- Editor UI for connections (add/edit/remove without hand-editing JSON)
+- Supports `-D` (dynamic / SOCKS), `-L` (local forward), `-R` (remote forward)
+- Per-tunnel byte counters (in-process proxy layer)
+- TCP ping monitoring of each target
+- Auto-reconnect with exponential backoff (2s–60s, up to 20 attempts)
+- Persistent stats / history (SQLite) with charts
+- Open at login (via `SMAppService`)
+- Optional HTTP CONNECT proxy for SOCKS (`-D`) tunnels
+- Logs ssh stderr per connection
 
 ## Build
 
@@ -119,7 +119,7 @@ Open it via the menu (**Edit config.json…**) and add entries. Then click
 | `listenPort` | yes | Local port to bind (or remote port for `-R`) |
 | `remoteHost` | only `-L`, `-R` | Target host as seen from the remote (or local, for `-R`) side |
 | `remotePort` | only `-L`, `-R` | Target port |
-| `autoReconnect` | yes | Reserved for phase 5; ignored in phase 1 |
+| `autoReconnect` | yes | Reconnect automatically with backoff (2s–60s), up to 20 attempts |
 | `autoStart` | yes | If true, start when the app launches |
 | `extraOptions` | yes | Extra `ssh -o` strings, e.g. `"TCPKeepAlive=yes"` (no leading `-o`) |
 
@@ -134,7 +134,7 @@ prompts** — auth must work non-interactively. In practice:
 If a tunnel fails immediately on start, open the log folder via the menu and
 check `<connection-id>.log`.
 
-## How it works (phase 1)
+## How it works
 
 For each connection the app spawns `/usr/bin/ssh` with appropriate flags:
 
@@ -152,8 +152,10 @@ For each connection the app spawns `/usr/bin/ssh` with appropriate flags:
 
 The child process lives as long as the menu bar shows it green. When the user
 toggles it off the app sends `SIGTERM`. If ssh dies on its own (server timeout,
-network drop, auth failure), the menu item turns to `⚠` — phase 5 will add
-automatic reconnection.
+network drop, auth failure) and `autoReconnect` is enabled, the menu item shows
+a reconnecting state and the app retries with exponential backoff (2s–60s, up to
+20 attempts); you can stop it at any time. If `autoReconnect` is off, the item
+turns to `⚠` and stays stopped.
 
 ## Files & directories
 

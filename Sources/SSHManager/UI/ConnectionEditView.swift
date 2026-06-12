@@ -68,7 +68,7 @@ struct ConnectionEditView: View {
                 Section("Behavior") {
                     Toggle("Auto-start on app launch", isOn: $draft.autoStart)
                     Toggle("Auto-reconnect on drop", isOn: $draft.autoReconnect)
-                        .help("Reserved for a later phase. Currently has no effect.")
+                        .help("Reconnect automatically with backoff (2s–60s), up to 20 attempts.")
                 }
 
                 Section("Extra ssh -o options") {
