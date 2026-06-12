@@ -30,11 +30,14 @@ final class HttpProxyServer {
         let params = NWParameters.tcp
         params.allowLocalEndpointReuse = true
 
-        guard let port = NWEndpoint.Port(rawValue: UInt16(listenPort)) else {
+        guard let raw = UInt16(exactly: listenPort), raw > 0,
+              let port = NWEndpoint.Port(rawValue: raw) else {
             throw HttpProxyError.invalidPort(listenPort)
         }
+        // Только loopback: HTTP-прокси не должен быть открыт в локальную сеть.
+        params.requiredLocalEndpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: port)
 
-        let listener = try NWListener(using: params, on: port)
+        let listener = try NWListener(using: params)
         listener.newConnectionHandler = { [weak self] client in
             self?.accept(client: client)
         }
