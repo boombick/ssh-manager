@@ -55,8 +55,7 @@ struct StatsView: View {
         .frame(minWidth: 720, minHeight: 560)
         .onAppear { reload() }
         .onChange(of: range) { _ in reload() }
-        .onReceive(supervisor.objectWillChange) { _ in
-            // The supervisor publishes on every ping tick / state change; refetch.
+        .onReceive(Timer.publish(every: 10, on: .main, in: .common).autoconnect()) { _ in
             reload()
         }
     }
