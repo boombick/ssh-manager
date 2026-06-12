@@ -4,7 +4,6 @@ import Network
 struct PingResult: Equatable {
     /// nil means the probe didn't complete (DNS failure, refused, timed out).
     let rttMs: Double?
-    let updatedAt: Date
 }
 
 struct PingTarget: Hashable {
@@ -69,7 +68,7 @@ final class PingMonitor: ObservableObject {
 
         guard let port = NWEndpoint.Port(rawValue: UInt16(target.port)) else {
             inflight.remove(id)
-            results[id] = PingResult(rttMs: nil, updatedAt: Date())
+            results[id] = PingResult(rttMs: nil)
             return
         }
 
@@ -90,7 +89,7 @@ final class PingMonitor: ObservableObject {
             conn.cancel()
             DispatchQueue.main.async {
                 self?.inflight.remove(id)
-                self?.results[id] = PingResult(rttMs: rtt, updatedAt: Date())
+                self?.results[id] = PingResult(rttMs: rtt)
             }
         }
 
