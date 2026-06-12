@@ -77,7 +77,11 @@ final class HttpProxyServer {
 
             if let endRange = buf.range(of: Data("\r\n\r\n".utf8)) {
                 let headerData = buf.subdata(in: 0..<endRange.lowerBound)
-                self.handleRequest(client: client, headerData: headerData)
+                // Bytes the client pipelined right after the header terminator
+                // (e.g. a TLS ClientHello). Must be forwarded once the tunnel
+                // is up, otherwise such connections hang.
+                let leftover = buf.subdata(in: endRange.upperBound..<buf.count)
+                self.handleRequest(client: client, headerData: headerData, leftover: leftover)
                 return
             }
 
@@ -97,7 +101,7 @@ final class HttpProxyServer {
     }
 
     /// Parse the request line. Only `CONNECT host:port HTTP/1.x` is accepted.
-    private func handleRequest(client: NWConnection, headerData: Data) {
+    private func handleRequest(client: NWConnection, headerData: Data, leftover: Data = Data()) {
         guard let headerString = String(data: headerData, encoding: .utf8) else {
             writeAndClose(client, response: "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n", logReason: "non-utf8 headers")
             return
@@ -126,7 +130,7 @@ final class HttpProxyServer {
             return
         }
 
-        connectViaSocks(client: client, targetHost: host, targetPort: port)
+        connectViaSocks(client: client, targetHost: host, targetPort: port, leftover: leftover)
     }
 
     /// Parse `host:port`. Host may be IPv4, IPv6 in brackets, or domain.
@@ -153,7 +157,7 @@ final class HttpProxyServer {
     /// Open a TCP connection to the local SOCKS5 listener, perform the no-auth
     /// handshake + CONNECT command, then on success reply 200 to the HTTP
     /// client and splice bytes.
-    private func connectViaSocks(client: NWConnection, targetHost: String, targetPort: UInt16) {
+    private func connectViaSocks(client: NWConnection, targetHost: String, targetPort: UInt16, leftover: Data = Data()) {
         guard let raw = UInt16(exactly: socksPort), raw > 0,
               let socksNWPort = NWEndpoint.Port(rawValue: raw) else {
             bail(client: client, socks: nil, reason: "invalid socks port \(socksPort)")
@@ -174,7 +178,7 @@ final class HttpProxyServer {
             guard let self, let socks else { return }
             switch state {
             case .ready:
-                self.socksHandshake(client: client, socks: socks, targetHost: targetHost, targetPort: targetPort)
+                self.socksHandshake(client: client, socks: socks, targetHost: targetHost, targetPort: targetPort, leftover: leftover)
             case .failed:
                 client?.cancel()
             case .cancelled:
@@ -188,7 +192,7 @@ final class HttpProxyServer {
 
     /// Step 1 of SOCKS5: send greeting (VER=05, NMETHODS=01, METHOD=00 no-auth),
     /// expect 2-byte reply `05 00`.
-    private func socksHandshake(client: NWConnection?, socks: NWConnection, targetHost: String, targetPort: UInt16) {
+    private func socksHandshake(client: NWConnection?, socks: NWConnection, targetHost: String, targetPort: UInt16, leftover: Data = Data()) {
         let greeting = Data([0x05, 0x01, 0x00])
         socks.send(content: greeting, completion: .contentProcessed { [weak self] error in
             guard let self else { return }
@@ -202,13 +206,13 @@ final class HttpProxyServer {
                     self.bail(client: client, socks: socks, reason:"socks greeting rejected")
                     return
                 }
-                self.socksConnect(client: client, socks: socks, targetHost: targetHost, targetPort: targetPort)
+                self.socksConnect(client: client, socks: socks, targetHost: targetHost, targetPort: targetPort, leftover: leftover)
             }
         })
     }
 
     /// Step 2 of SOCKS5: send CONNECT command with the requested host:port.
-    private func socksConnect(client: NWConnection?, socks: NWConnection, targetHost: String, targetPort: UInt16) {
+    private func socksConnect(client: NWConnection?, socks: NWConnection, targetHost: String, targetPort: UInt16, leftover: Data = Data()) {
         var req = Data([0x05, 0x01, 0x00])  // VER, CMD=CONNECT, RSV
         req.append(socksAddress(targetHost))
         var pBig = targetPort.bigEndian
@@ -250,7 +254,7 @@ final class HttpProxyServer {
                                 self.bail(client: client, socks: socks, reason:"socks reply domain drain failed")
                                 return
                             }
-                            self.completeHandshakeAndSplice(client: client, socks: socks)
+                            self.completeHandshakeAndSplice(client: client, socks: socks, leftover: leftover)
                         }
                     }
                     return
@@ -265,18 +269,23 @@ final class HttpProxyServer {
                         self.bail(client: client, socks: socks, reason:"socks reply addr drain failed")
                         return
                     }
-                    self.completeHandshakeAndSplice(client: client, socks: socks)
+                    self.completeHandshakeAndSplice(client: client, socks: socks, leftover: leftover)
                 }
             }
         })
     }
 
-    private func completeHandshakeAndSplice(client: NWConnection?, socks: NWConnection) {
+    private func completeHandshakeAndSplice(client: NWConnection?, socks: NWConnection, leftover: Data = Data()) {
         guard let client else { socks.cancel(); return }
         let ok = "HTTP/1.1 200 Connection Established\r\n\r\n"
         client.send(content: Data(ok.utf8), completion: .contentProcessed { [weak self] err in
             guard let self, err == nil else {
                 client.cancel(); socks.cancel(); return
+            }
+            // Forward any bytes the client pipelined after the CONNECT header
+            // before splicing begins, so pipelined TLS handshakes don't hang.
+            if !leftover.isEmpty {
+                socks.send(content: leftover, completion: .contentProcessed { _ in })
             }
             self.splice(a: client, b: socks)
             self.splice(a: socks, b: client)
