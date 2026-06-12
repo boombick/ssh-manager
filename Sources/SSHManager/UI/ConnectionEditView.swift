@@ -138,6 +138,9 @@ struct ConnectionEditView: View {
                 if p == draft.listenPort {
                     return "HTTP port must differ from SOCKS port"
                 }
+                if p == draft.listenPort + 10000 {
+                    return "HTTP port conflicts with the internal ssh port (listen port + 10000)"
+                }
             }
         }
         return nil
