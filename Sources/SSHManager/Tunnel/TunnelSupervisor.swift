@@ -143,9 +143,10 @@ final class TunnelSupervisor: ObservableObject {
 
     func toggle(id: UUID) {
         guard let e = engines[id] else { return }
-        if e.state.isRunning {
+        switch e.state {
+        case .running, .reconnecting:
             e.stop()
-        } else {
+        case .stopped, .failed:
             e.start()
         }
     }
