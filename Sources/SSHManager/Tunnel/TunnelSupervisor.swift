@@ -16,9 +16,6 @@ final class TunnelSupervisor: ObservableObject {
     let history: HistoryStore?
     private var lastByteSnapshot: [UUID: ByteCounters] = [:]
 
-    /// Optional callback for AppKit consumers (the status menu) that don't observe @Published.
-    var onChange: (() -> Void)?
-
     init(store: ConfigStore, connections: [Connection]) {
         self.store = store
         self.connections = connections
@@ -121,16 +118,12 @@ final class TunnelSupervisor: ObservableObject {
                 freshHttp[id] = p
             }
         }
-        var notify = false
         if fresh != stats {
             stats = fresh
-            notify = true
         }
         if freshHttp != httpPorts {
             httpPorts = freshHttp
-            notify = true
         }
-        if notify { onChange?() }
     }
 
     // MARK: - Lookup
@@ -214,7 +207,6 @@ final class TunnelSupervisor: ObservableObject {
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.objectWillChange.send()
-                self.onChange?()
                 self.recordStateChangeEvent(connectionId: c.id, newState: newState)
                 if case .stopped = newState {
                     self.engines[c.id]?.start()
@@ -275,7 +267,6 @@ final class TunnelSupervisor: ObservableObject {
                 // Engine state lives in TunnelEngine. Re-publish so SwiftUI re-evaluates
                 // bodies that read supervisor.state(for:).
                 self.objectWillChange.send()
-                self.onChange?()
                 self.recordStateChangeEvent(connectionId: connection.id, newState: newState)
             }
         }
@@ -287,9 +278,8 @@ final class TunnelSupervisor: ObservableObject {
 
     private func notifyChanged() {
         // @Published var connections already fires objectWillChange on assignment,
-        // but CRUD methods may also affect engine maps; nudge subscribers and AppKit menu.
+        // but CRUD methods may also affect engine maps; nudge subscribers.
         objectWillChange.send()
         refreshPingTargets()
-        onChange?()
     }
 }

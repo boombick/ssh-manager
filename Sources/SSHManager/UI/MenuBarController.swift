@@ -1,9 +1,10 @@
 import AppKit
 
-final class MenuBarController: NSObject {
+final class MenuBarController: NSObject, NSMenuDelegate {
     private let statusItem: NSStatusItem
     private let supervisor: TunnelSupervisor
     private let onOpenWindow: () -> Void
+    private let menu = NSMenu()
 
     init(supervisor: TunnelSupervisor, onOpenWindow: @escaping () -> Void) {
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -18,12 +19,14 @@ final class MenuBarController: NSObject {
             button.image = image
         }
 
-        supervisor.onChange = { [weak self] in self?.rebuildMenu() }
-        rebuildMenu()
+        menu.delegate = self
+        statusItem.menu = menu
     }
 
-    private func rebuildMenu() {
-        let menu = NSMenu()
+    // Built lazily each time the menu is about to open, so the items reflect
+    // current state without re-creating the menu (which causes tracking glitches).
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
 
         if supervisor.connections.isEmpty {
             let item = NSMenuItem(title: "No connections — edit config.json",
@@ -76,8 +79,6 @@ final class MenuBarController: NSObject {
                                   action: #selector(NSApplication.terminate(_:)),
                                   keyEquivalent: "q")
         menu.addItem(quitItem)
-
-        statusItem.menu = menu
     }
 
     private func title(for c: Connection, state: TunnelState, counters: ByteCounters) -> String {
