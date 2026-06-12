@@ -155,8 +155,21 @@ final class TunnelSupervisor: ObservableObject {
         engines[id]?.retryNow()
     }
 
-    func stopAll() {
-        for e in engines.values { e.stop() }
+    /// Остановка при выходе из приложения. Событие `.stopped` пишется из
+    /// асинхронного handleTermination, который не успевает до завершения
+    /// процесса — поэтому фиксируем `.stopped` синхронно здесь и дожидаемся
+    /// сброса истории на диск.
+    func shutdownForQuit() {
+        for (id, e) in engines {
+            switch e.state {
+            case .running, .reconnecting:
+                history?.recordEvent(connectionId: id, kind: .stopped)
+            case .stopped, .failed:
+                break
+            }
+            e.stop()
+        }
+        history?.flush()
     }
 
     // MARK: - CRUD
