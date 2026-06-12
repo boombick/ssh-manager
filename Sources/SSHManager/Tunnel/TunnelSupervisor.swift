@@ -87,10 +87,10 @@ final class TunnelSupervisor: ObservableObject {
             history.recordEvent(connectionId: connectionId, kind: .started)
         case .stopped:
             history.recordEvent(connectionId: connectionId, kind: .stopped)
-        case .reconnecting:
-            // Transient state — the surrounding .failed events already record
-            // each death; .reconnecting itself doesn't go into history.
-            break
+        case .reconnecting(_, _, let lastError):
+            // Каждый уход в реконнект — это смерть туннеля; фиксируем её,
+            // иначе при autoReconnect обрывы не попадают в историю вовсе.
+            history.recordEvent(connectionId: connectionId, kind: .failed, message: lastError)
         case .failed(let msg):
             history.recordEvent(connectionId: connectionId, kind: .failed, message: msg)
         }

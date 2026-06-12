@@ -297,6 +297,13 @@ final class HistoryStore {
         return min(1, sum / total)
     }
 
+    // MARK: - Flush
+
+    /// Барьер: дождаться завершения всех ранее поставленных асинхронных записей.
+    func flush() {
+        queue.sync {}
+    }
+
     // MARK: - Purge
 
     func purgeOlderThan(seconds: TimeInterval) {
