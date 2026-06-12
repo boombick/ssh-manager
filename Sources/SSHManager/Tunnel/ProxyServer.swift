@@ -65,9 +65,14 @@ final class ProxyServer {
     // MARK: - Private
 
     private func accept(client: NWConnection) {
+        guard let raw = UInt16(exactly: targetPort), raw > 0,
+              let targetNWPort = NWEndpoint.Port(rawValue: raw) else {
+            client.cancel()
+            return
+        }
         let target = NWConnection(
             host: NWEndpoint.Host(targetHost),
-            port: NWEndpoint.Port(rawValue: UInt16(targetPort))!,
+            port: targetNWPort,
             using: .tcp
         )
 

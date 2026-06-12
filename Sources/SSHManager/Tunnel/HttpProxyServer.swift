@@ -154,9 +154,14 @@ final class HttpProxyServer {
     /// handshake + CONNECT command, then on success reply 200 to the HTTP
     /// client and splice bytes.
     private func connectViaSocks(client: NWConnection, targetHost: String, targetPort: UInt16) {
+        guard let raw = UInt16(exactly: socksPort), raw > 0,
+              let socksNWPort = NWEndpoint.Port(rawValue: raw) else {
+            bail(client: client, socks: nil, reason: "invalid socks port \(socksPort)")
+            return
+        }
         let socks = NWConnection(
             host: NWEndpoint.Host("127.0.0.1"),
-            port: NWEndpoint.Port(rawValue: UInt16(socksPort))!,
+            port: socksNWPort,
             using: .tcp
         )
 
@@ -329,7 +334,7 @@ final class HttpProxyServer {
     }
 
     /// Bail out mid-handshake: write an HTTP status to the client and tear down.
-    private func bail(client: NWConnection?, socks: NWConnection, reason: String) {
+    private func bail(client: NWConnection?, socks: NWConnection?, reason: String) {
         NSLog("SSHManager HttpProxy: \(reason)")
         if let client {
             let body = "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"
@@ -337,7 +342,7 @@ final class HttpProxyServer {
                 client.cancel()
             })
         }
-        socks.cancel()
+        socks?.cancel()
     }
 }
 

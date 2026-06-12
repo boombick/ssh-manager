@@ -389,7 +389,7 @@ final class TunnelEngine {
 
     // MARK: - Planning
 
-    private struct TunnelPlan {
+    struct TunnelPlan {
         let sshArgs: [String]
         let proxyListenPort: Int
         let proxyTargetHost: String
@@ -399,6 +399,7 @@ final class TunnelEngine {
     enum PlanError: LocalizedError {
         case listenPortOutOfRange
         case missingRemoteEndpoint
+        case portOutOfRange(String)
 
         var errorDescription: String? {
             switch self {
@@ -406,12 +407,24 @@ final class TunnelEngine {
                 return "Listen port + \(TunnelEngine.proxyPortOffset) exceeds 65535. Pick a lower port."
             case .missingRemoteEndpoint:
                 return "Remote host/port are required for -L / -R tunnels."
+            case .portOutOfRange(let what):
+                return "\(what) must be in range 1–65535."
             }
         }
     }
 
-    private func planTunnel() throws -> TunnelPlan {
+    func planTunnel() throws -> TunnelPlan {
         let offset = TunnelEngine.proxyPortOffset
+
+        // Конфиг может быть отредактирован руками — порты не валидированы UI-формой.
+        // Без этих проверок UInt16(...) ниже по стеку трапается и роняет всё приложение.
+        guard (1...65535).contains(connection.sshPort) else {
+            throw PlanError.portOutOfRange("SSH port")
+        }
+        guard (1...65535).contains(connection.listenPort) else {
+            throw PlanError.portOutOfRange("Listen port")
+        }
+
         var sshOpts: [String] = [
             "-N", "-T",
             "-o", "BatchMode=yes",
@@ -438,6 +451,9 @@ final class TunnelEngine {
                   let rp = connection.remotePort else {
                 throw PlanError.missingRemoteEndpoint
             }
+            guard (1...65535).contains(rp) else {
+                throw PlanError.portOutOfRange("Remote port")
+            }
             let sshLocalPort = connection.listenPort + offset
             guard sshLocalPort <= 65535 else { throw PlanError.listenPortOutOfRange }
             sshOpts += ["-L", "\(sshLocalPort):\(rh):\(rp)"]
@@ -454,6 +470,9 @@ final class TunnelEngine {
             guard let rh = connection.remoteHost, !rh.isEmpty,
                   let rp = connection.remotePort else {
                 throw PlanError.missingRemoteEndpoint
+            }
+            guard (1...65535).contains(rp) else {
+                throw PlanError.portOutOfRange("Remote port")
             }
             let proxyLocal = rp + offset
             guard proxyLocal <= 65535 else { throw PlanError.listenPortOutOfRange }
