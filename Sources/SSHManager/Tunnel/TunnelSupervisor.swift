@@ -63,7 +63,9 @@ final class TunnelSupervisor: ObservableObject {
         guard let history else { return }
         let now = Date()
         for c in connections {
-            let current = engines[c.id]?.snapshotStats() ?? ByteCounters()
+            // Остановленные соединения не пишем — иначе плодим нулевые строки.
+            guard let engine = engines[c.id], engine.state.isRunning else { continue }
+            let current = engine.snapshotStats()
             let prev = lastByteSnapshot[c.id] ?? ByteCounters()
             // Counters reset to 0 on engine restart. If `current < prev` (a wrap), treat as fresh.
             let upDelta: UInt64 = current.up >= prev.up ? current.up - prev.up : current.up
