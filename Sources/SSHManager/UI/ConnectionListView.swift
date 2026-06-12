@@ -179,6 +179,7 @@ struct ConnectionListView: View {
                             onShowStats: { statsFor = c },
                             onDelete: {
                                 do {
+                                    if statsFor?.id == c.id { statsFor = nil }
                                     try supervisor.deleteConnection(id: c.id)
                                 } catch {
                                     errorMessage = "Failed to delete: \(error.localizedDescription)"
