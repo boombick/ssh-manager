@@ -173,16 +173,40 @@ final class TunnelSupervisor: ObservableObject {
         connections[idx] = c
         try store.save(connections)
 
-        // Recreate the engine so it picks up new parameters.
-        let wasRunning = engines[c.id]?.state.isRunning ?? false
-        if let old = engines[c.id] {
-            old.stop()
-            engines.removeValue(forKey: c.id)
+        let oldEngine = engines[c.id]
+        let wasActive: Bool
+        if let st = oldEngine?.state {
+            switch st {
+            case .running, .reconnecting: wasActive = true
+            case .stopped, .failed:       wasActive = false
+            }
+        } else {
+            wasActive = false
         }
+
+        // Поставить новый движок в map (он заменяет старый), но не стартовать
+        // сразу — старый ssh ещё держит порт listenPort+10000, а старый
+        // ProxyServer — listenPort; иначе новый бинд падает.
         installEngine(for: c, startIfAuto: false)
-        if wasRunning {
-            engines[c.id]?.start()
+
+        guard wasActive, let oldEngine else {
+            notifyChanged()
+            return
         }
+
+        // Запустить новый движок только после того, как старый реально остановится.
+        oldEngine.onStateChange = { [weak self] newState in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.objectWillChange.send()
+                self.onChange?()
+                self.recordStateChangeEvent(connectionId: c.id, newState: newState)
+                if case .stopped = newState {
+                    self.engines[c.id]?.start()
+                }
+            }
+        }
+        oldEngine.stop()
         notifyChanged()
     }
 
