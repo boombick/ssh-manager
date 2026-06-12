@@ -14,6 +14,14 @@ let package = Package(
             linkerSettings: [
                 .linkedLibrary("sqlite3")
             ]
+        ),
+        .testTarget(
+            name: "SSHManagerTests",
+            dependencies: ["SSHManager"],
+            path: "Tests/SSHManagerTests",
+            swiftSettings: [
+                .swiftLanguageMode(.v5)
+            ]
         )
     ]
 )
