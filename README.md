@@ -11,6 +11,7 @@
 ## Возможности
 
 - **Три типа туннелей:** SOCKS-прокси (`-D`), проброс локального порта на удалённый сервис (`-L`), проброс локального сервиса наружу (`-R`).
+- **Мастер-порт:** один фиксированный локальный порт (по умолчанию 1080), за которым одним кликом переключается любой SOCKS-туннель. Клиенты (браузер и т.п.) настраиваются на мастер-порт один раз, а сервер за ним меняется из меню; свой порт у каждого туннеля при этом сохраняется.
 - **Авто-переподключение** с нарастающей паузой (2, 5, 10, 20, 30, 60 секунд), до 20 попыток. Кнопка «Retry now» пропускает ожидание.
 - **Счётчики трафика** по каждому туннелю. Встроенный TCP-прокси считает байты в обе стороны (сам ssh этих цифр не даёт).
 - **Мониторинг задержки:** TCP-проба до ssh-порта раз в 10 секунд. ICMP не нужен — бастионы часто режут пинг, но пускают SSH.
@@ -19,6 +20,7 @@
 - **Запуск при входе** через `SMAppService`.
 - **Авто-старт** выбранных туннелей при запуске приложения.
 - **Редактор соединений** в окне плюс правка `config.json` вручную с перечитыванием по кнопке.
+- **Debug-режим:** трассировка пути трафика (accept'ы прокси, чанки байтов, публикация счётчиков) в отдельные trace-логи и «Save Debug Report…» — выгрузка всего внутреннего состояния одним текстовым файлом (состояния движков, счётчики, `lsof` по портам, хвосты логов) для диагностики.
 
 ## Скриншоты
 
@@ -81,55 +83,80 @@ open ./SSHManager.app
 
 Добавляйте соединения через окно (**Manage Connections…**) или правьте файл руками (**Edit config.json…**), затем нажмите **Reload Config**.
 
+### Мастер-порт
+
+Один фиксированный локальный порт, за которым живёт «текущий» SOCKS-туннель. Настройте браузер или систему на `127.0.0.1:1080` один раз — и меняйте сервер за этим портом одним кликом:
+
+- в статус-меню: подменю **Master Port :1080 → …** (список SOCKS-туннелей + Off);
+- в окне управления: панель **Master port** — там же меняется и сам порт.
+
+При переключении старые соединения через мастер-порт разрываются (трафик сразу идёт через новый сервер), а выбранный туннель поднимается автоматически, если был остановлен. Выбор сохраняется между перезапусками. Порт не должен совпадать с `listenPort` какого-либо соединения.
+
 ### Пример config.json
 
 ```json
-[
-  {
-    "id": "11111111-1111-1111-1111-111111111111",
-    "name": "Work SOCKS",
-    "type": "dynamic",
-    "host": "bastion.example.com",
-    "sshPort": 22,
-    "user": "root",
-    "identityFile": "~/.ssh/id_ed25519",
-    "listenPort": 1080,
-    "autoReconnect": true,
-    "autoStart": true,
-    "extraOptions": []
-  },
-  {
-    "id": "22222222-2222-2222-2222-222222222222",
-    "name": "Postgres on prod",
-    "type": "local",
-    "host": "bastion.example.com",
-    "sshPort": 22,
-    "user": "ops",
-    "listenPort": 5433,
-    "remoteHost": "db-prod.internal",
-    "remotePort": 5432,
-    "autoReconnect": true,
-    "autoStart": false,
-    "extraOptions": ["Compression=yes"]
-  },
-  {
-    "id": "33333333-3333-3333-3333-333333333333",
-    "name": "Expose local dev",
-    "type": "remote",
-    "host": "tunnel.example.com",
-    "sshPort": 22,
-    "user": "me",
-    "listenPort": 8080,
-    "remoteHost": "localhost",
-    "remotePort": 3000,
-    "autoReconnect": false,
-    "autoStart": false,
-    "extraOptions": []
-  }
-]
+{
+  "masterPort": 1080,
+  "masterConnectionId": "11111111-1111-1111-1111-111111111111",
+  "connections": [
+    {
+      "id": "11111111-1111-1111-1111-111111111111",
+      "name": "Work SOCKS",
+      "type": "dynamic",
+      "host": "bastion.example.com",
+      "sshPort": 22,
+      "user": "root",
+      "identityFile": "~/.ssh/id_ed25519",
+      "listenPort": 2080,
+      "autoReconnect": true,
+      "autoStart": true,
+      "extraOptions": []
+    },
+    {
+      "id": "22222222-2222-2222-2222-222222222222",
+      "name": "Postgres on prod",
+      "type": "local",
+      "host": "bastion.example.com",
+      "sshPort": 22,
+      "user": "ops",
+      "listenPort": 5433,
+      "remoteHost": "db-prod.internal",
+      "remotePort": 5432,
+      "autoReconnect": true,
+      "autoStart": false,
+      "extraOptions": ["Compression=yes"]
+    },
+    {
+      "id": "33333333-3333-3333-3333-333333333333",
+      "name": "Expose local dev",
+      "type": "remote",
+      "host": "tunnel.example.com",
+      "sshPort": 22,
+      "user": "me",
+      "listenPort": 8080,
+      "remoteHost": "localhost",
+      "remotePort": 3000,
+      "autoReconnect": false,
+      "autoStart": false,
+      "extraOptions": []
+    }
+  ]
+}
 ```
 
+Конфиг от версий до 0.5.0 (голый массив соединений) мигрирует автоматически при первом запуске.
+
 ### Поля
+
+Верхний уровень:
+
+| Поле | Обязательное | Описание |
+|---|---|---|
+| `masterPort` | нет | Мастер-порт, по умолчанию 1080 |
+| `masterConnectionId` | нет | `id` SOCKS-соединения за мастер-портом; `null` — выключен |
+| `connections` | да | Список соединений (поля ниже) |
+
+Соединение:
 
 | Поле | Обязательное | Описание |
 |---|---|---|
@@ -184,25 +211,27 @@ open ./SSHManager.app
 
 ```
 ~/Library/Application Support/SSHManager/
-  config.json                  ← соединения (правится вами или через UI)
-  history.db                   ← история задержки/трафика/событий (SQLite)
-  logs/<id-соединения>.log     ← stderr ssh по каждому запуску
+  config.json                       ← настройки и соединения (правится вами или через UI)
+  history.db                        ← история задержки/трафика/событий (SQLite)
+  logs/<id-соединения>.log          ← stderr ssh по каждому запуску
+  logs/<id-соединения>.trace.log    ← трассировка трафика (только при включённом Debug Mode)
+  debug-reports/                    ← отчёты «Save Debug Report…»
 ```
 
 ## Структура проекта
 
 ```
 Package.swift
-Resources/Info.plist
-scripts/build-app.sh
-scripts/build-pkg.sh
+Resources/              Info.plist, AppIcon.icns
+scripts/                build-app.sh, build-pkg.sh, make-icon.sh (иконка из app_icon.png)
 Sources/SSHManager/
   main.swift
   AppDelegate.swift
-  Models/Connection.swift
-  Storage/            Paths, ConfigStore, LoginItem
-  Tunnel/             TunnelEngine, TunnelSupervisor, ProxyServer, HttpProxyServer, PingMonitor
-  History/            Database, HistoryStore
-  UI/                 MenuBarController, MainWindowController, ConnectionListView, ConnectionEditView, StatsView
+  Models/               Connection, AppConfig
+  Storage/              Paths, ConfigStore, LoginItem
+  Tunnel/               TunnelEngine, TunnelSupervisor, ProxyServer, HttpProxyServer, PingMonitor, DebugTrace
+  History/              Database, HistoryStore
+  Debug/                DebugReport
+  UI/                   MenuBarController, MainWindowController, ConnectionListView, ConnectionEditView, StatsView
 Tests/SSHManagerTests/
 ```
