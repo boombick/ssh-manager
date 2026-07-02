@@ -9,6 +9,7 @@ struct ConnectionListView: View {
     @State private var openAtLogin: Bool = LoginItem.isEnabled
     @State private var loginAlert: LoginAlert?
     @State private var suppressOpenAtLoginChange = false
+    @State private var masterPortText: String = ""
 
     private struct LoginAlert: Identifiable {
         let id = UUID()
@@ -22,6 +23,8 @@ struct ConnectionListView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
+            Divider()
+            masterBar
             Divider()
             content
         }
@@ -92,6 +95,80 @@ struct ConnectionListView: View {
                 suppressOpenAtLoginChange = true
                 openAtLogin = truth
             }
+            masterPortText = String(supervisor.masterPort)
+        }
+    }
+
+    // MARK: - Master port bar
+
+    /// One line: port field + target picker. The same switching the status
+    /// menu offers, plus the only UI for changing the port value itself.
+    private var masterBar: some View {
+        HStack(spacing: 8) {
+            Text("Master port")
+                .font(.callout)
+            TextField("1080", text: $masterPortText)
+                .textFieldStyle(.roundedBorder)
+                .multilineTextAlignment(.trailing)
+                .frame(width: 64)
+                .onSubmit { commitMasterPort() }
+            Image(systemName: "arrow.right")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Picker("", selection: masterSelection) {
+                Text("Off").tag(UUID?.none)
+                ForEach(supervisor.connections.filter { $0.type == .dynamic }) { c in
+                    Text("\(c.name)  ·  :\(c.listenPort)").tag(Optional(c.id))
+                }
+            }
+            .labelsHidden()
+            .frame(maxWidth: 240)
+            Spacer()
+            Text(masterStatus)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .onChange(of: supervisor.masterPort) { new in
+            masterPortText = String(new)
+        }
+    }
+
+    private var masterSelection: Binding<UUID?> {
+        Binding(
+            get: { supervisor.masterConnectionId },
+            set: { id in
+                commitMasterPort()          // apply a typed-but-unsubmitted port first
+                do {
+                    try supervisor.selectMaster(id: id)
+                } catch {
+                    errorMessage = error.localizedDescription
+                }
+            }
+        )
+    }
+
+    private var masterStatus: String {
+        guard let id = supervisor.masterConnectionId,
+              let c = supervisor.connections.first(where: { $0.id == id }) else {
+            return "one fixed port, switchable target"
+        }
+        return "forwarding :\(supervisor.masterPort) → \(c.name)"
+    }
+
+    private func commitMasterPort() {
+        guard let port = Int(masterPortText.trimmingCharacters(in: .whitespaces)) else {
+            errorMessage = "Master port must be a number."
+            masterPortText = String(supervisor.masterPort)
+            return
+        }
+        guard port != supervisor.masterPort else { return }
+        do {
+            try supervisor.setMasterPort(port)
+        } catch {
+            errorMessage = error.localizedDescription
+            masterPortText = String(supervisor.masterPort)
         }
     }
 

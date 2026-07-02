@@ -18,7 +18,7 @@ final class TunnelSupervisor: ObservableObject {
 
     // Master port: one fixed local port forwarding into the selected
     // connection's own SOCKS listener. Selection persists in config.json.
-    private(set) var masterPort: Int
+    @Published private(set) var masterPort: Int
     @Published private(set) var masterConnectionId: UUID?
     private var masterProxy: ProxyServer?
 
@@ -167,17 +167,49 @@ final class TunnelSupervisor: ObservableObject {
     // MARK: - Master port
 
     enum MasterPortError: LocalizedError {
+        case invalidPort(Int)
         case portCollision(port: Int, connectionName: String)
         case bindFailed(port: Int, underlying: Error)
 
         var errorDescription: String? {
             switch self {
+            case .invalidPort(let port):
+                return "Master port must be in range 1–65535 (got \(port))."
             case .portCollision(let port, let name):
-                return "Master port \(port) is already used as the listen port of “\(name)”. Change masterPort in config.json."
+                return "Port \(port) is already used as the listen port of “\(name)”. Pick another master port."
             case .bindFailed(let port, let underlying):
                 return "Cannot bind master port \(port): \(underlying.localizedDescription)"
             }
         }
+    }
+
+    /// Change the master port value. Validates, re-binds the master proxy if a
+    /// target is selected, persists. Throws with the old value still in effect.
+    func setMasterPort(_ port: Int) throws {
+        guard (1...65535).contains(port) else {
+            throw MasterPortError.invalidPort(port)
+        }
+        guard port != masterPort else { return }
+        if let clash = connections.first(where: { $0.listenPort == port }) {
+            throw MasterPortError.portCollision(port: port, connectionName: clash.name)
+        }
+
+        let oldPort = masterPort
+        masterPort = port
+        if let id = masterConnectionId,
+           let c = connections.first(where: { $0.id == id }) {
+            tearDownMasterProxy()
+            do {
+                try bringUpMasterProxy(target: c)
+            } catch {
+                // Roll back so UI and reality agree; the old proxy is gone
+                // either way, so re-bind it too (best effort).
+                masterPort = oldPort
+                try? bringUpMasterProxy(target: c)
+                throw error
+            }
+        }
+        try saveConfig()
     }
 
     /// Point the master port at connection `id` (nil = off): start its engine
