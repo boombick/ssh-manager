@@ -6,3 +6,4 @@ SSHManager.app/
 DerivedData/
 .DS_Store
 *.pkg
+build/

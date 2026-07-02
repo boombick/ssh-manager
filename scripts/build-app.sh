@@ -21,6 +21,7 @@ mkdir -p "${APP}/Contents/MacOS"
 mkdir -p "${APP}/Contents/Resources"
 cp "${EXEC}" "${APP}/Contents/MacOS/SSHManager"
 cp "Resources/Info.plist" "${APP}/Contents/Info.plist"
+cp "Resources/AppIcon.icns" "${APP}/Contents/Resources/AppIcon.icns"
 
 # Ad-hoc sign so launchd / Gatekeeper are happy with a local build.
 codesign --force --sign - "${APP}" >/dev/null 2>&1 || true

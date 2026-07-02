@@ -6,6 +6,8 @@
 	<string>SSH Manager</string>
 	<key>CFBundleExecutable</key>
 	<string>SSHManager</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
 	<string>local.sshmanager</string>
 	<key>CFBundleInfoDictionaryVersion</key>
