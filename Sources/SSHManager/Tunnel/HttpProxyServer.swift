@@ -2,6 +2,14 @@ import Foundation
 import Network
 import Darwin
 
+/// Point-in-time health snapshot of an HttpProxyServer (see ProxyDiagnostics
+/// for the rationale). Tunnels = CONNECT requests that reached splicing.
+struct HttpProxyDiagnostics: Equatable {
+    var listenerState: String = "not started"
+    var acceptedTotal: UInt64 = 0
+    var activeTunnels: Int = 0
+}
+
 /// CONNECT-only HTTP proxy. Accepts plain HTTP `CONNECT host:port HTTP/1.1`
 /// requests, performs a SOCKS5 no-auth handshake to a local SOCKS5 listener
 /// at `127.0.0.1:socksPort`, replies `200 Connection Established`, then
@@ -14,6 +22,9 @@ final class HttpProxyServer {
     let listenPort: Int
     let socksPort: Int
 
+    /// Connection this proxy serves; used to route DebugTrace lines. Nil in tests.
+    let connectionId: UUID?
+
     /// Called if the NWListener fails (port already bound at start, or fails
     /// mid-run). The engine treats this like an ssh-death event.
     var onListenerFailure: ((Error) -> Void)?
@@ -21,9 +32,30 @@ final class HttpProxyServer {
     private let queue = DispatchQueue(label: "ssh-manager.http-proxy", qos: .userInitiated)
     private var listener: NWListener?
 
-    init(listenPort: Int, socksPort: Int) {
+    private let diagLock = NSLock()
+    private var diag = HttpProxyDiagnostics()
+
+    init(listenPort: Int, socksPort: Int, connectionId: UUID? = nil) {
         self.listenPort = listenPort
         self.socksPort = socksPort
+        self.connectionId = connectionId
+    }
+
+    /// Thread-safe snapshot of listener state and tunnel counters.
+    func diagnostics() -> HttpProxyDiagnostics {
+        diagLock.lock(); defer { diagLock.unlock() }
+        return diag
+    }
+
+    private func mutateDiag(_ change: (inout HttpProxyDiagnostics) -> Void) {
+        diagLock.lock()
+        change(&diag)
+        diagLock.unlock()
+    }
+
+    private func trace(_ message: @autoclosure () -> String) {
+        guard let connectionId else { return }
+        DebugTrace.shared.trace(connectionId, "http-proxy", message())
     }
 
     func start() throws {
@@ -42,8 +74,11 @@ final class HttpProxyServer {
             self?.accept(client: client)
         }
         listener.stateUpdateHandler = { [weak self] state in
+            guard let self else { return }
+            self.mutateDiag { $0.listenerState = "\(state)" }
+            self.trace("listener state: \(state) (port \(self.listenPort))")
             if case .failed(let error) = state {
-                self?.onListenerFailure?(error)
+                self.onListenerFailure?(error)
             }
         }
         listener.start(queue: queue)
@@ -58,6 +93,8 @@ final class HttpProxyServer {
     // MARK: - Per-connection flow
 
     private func accept(client: NWConnection) {
+        mutateDiag { $0.acceptedTotal += 1 }
+        trace("accepted \(client.endpoint)")
         client.start(queue: queue)
         readHttpRequest(client: client, accumulated: Data())
     }
@@ -119,6 +156,8 @@ final class HttpProxyServer {
 
         let method = parts[0].uppercased()
         let target = parts[1]
+
+        trace("request: \(firstLine)")
 
         guard method == "CONNECT" else {
             writeAndClose(client, response: "HTTP/1.1 405 Method Not Allowed\r\nAllow: CONNECT\r\nContent-Length: 0\r\n\r\n", logReason: "non-CONNECT method: \(method)")
@@ -287,6 +326,8 @@ final class HttpProxyServer {
             if !leftover.isEmpty {
                 socks.send(content: leftover, completion: .contentProcessed { _ in })
             }
+            self.mutateDiag { $0.activeTunnels += 1 }
+            self.trace("tunnel established, splicing")
             let pair = SplicePair()
             self.splice(a: client, b: socks, pair: pair)
             self.splice(a: socks, b: client, pair: pair)
@@ -319,13 +360,28 @@ final class HttpProxyServer {
     // MARK: - Splice + helpers
 
     /// Tracks how many of the two splice directions for a connection-pair have
-    /// finished. Only touched on the proxy `queue`, so no locking is needed.
-    private final class SplicePair { var finished = 0 }
+    /// finished, plus per-tunnel byte totals for tracing. Only touched on the
+    /// proxy `queue`, so no locking is needed.
+    private final class SplicePair {
+        var finished = 0
+        var closedReported = false
+        var bytesTotal: UInt64 = 0
+    }
+
+    /// Mark the tunnel closed exactly once (both directions done, or an error path).
+    private func reportClosed(_ pair: SplicePair, reason: String) {
+        guard !pair.closedReported else { return }
+        pair.closedReported = true
+        mutateDiag { $0.activeTunnels -= 1 }
+        trace("tunnel closed (\(reason)): \(pair.bytesTotal) B total")
+    }
 
     /// Recursive read-and-forward, mirroring ProxyServer.pump.
     private func splice(a: NWConnection, b: NWConnection, pair: SplicePair) {
         a.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, isComplete, error in
             if let data, !data.isEmpty {
+                pair.bytesTotal += UInt64(data.count)
+                self?.trace("chunk \(data.count) B")
                 b.send(content: data, completion: .contentProcessed { _ in })
             }
             if isComplete {
@@ -333,11 +389,14 @@ final class HttpProxyServer {
                 pair.finished += 1
                 if pair.finished == 2 {
                     a.cancel(); b.cancel()
+                    self?.reportClosed(pair, reason: "both directions complete")
                 }
                 return
             }
             if error != nil {
-                a.cancel(); b.cancel(); return
+                a.cancel(); b.cancel()
+                self?.reportClosed(pair, reason: "error: \(error!)")
+                return
             }
             self?.splice(a: a, b: b, pair: pair)
         }

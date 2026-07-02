@@ -119,6 +119,11 @@ final class TunnelSupervisor: ObservableObject {
             }
         }
         if fresh != stats {
+            // Последнее звено цепочки счётчиков: если движок насчитал байты,
+            // а этих строк в trace нет — разрыв между engine и UI.
+            for (id, new) in fresh where new != stats[id] {
+                DebugTrace.shared.trace(id, "supervisor", "published stats up=\(new.up) down=\(new.down)")
+            }
             stats = fresh
         }
         if freshHttp != httpPorts {

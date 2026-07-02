@@ -20,6 +20,14 @@ enum Paths {
         logsDirectory.appendingPathComponent("\(id.uuidString).log")
     }
 
+    static func traceFile(for id: UUID) -> URL {
+        logsDirectory.appendingPathComponent("\(id.uuidString).trace.log")
+    }
+
+    static var debugReportsDirectory: URL {
+        supportDirectory.appendingPathComponent("debug-reports", isDirectory: true)
+    }
+
     static var historyFile: URL {
         supportDirectory.appendingPathComponent("history.db")
     }

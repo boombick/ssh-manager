@@ -45,6 +45,9 @@ final class TunnelEngine {
     private var proxy: ProxyServer?
     private var httpProxy: HttpProxyServer?
     private(set) var actualHttpProxyPort: Int?
+
+    /// The plan computed by the most recent start(), kept for debug reports.
+    private(set) var lastPlan: TunnelPlan?
     private var logHandle: FileHandle?
     private var manuallyStopped = false
 
@@ -89,6 +92,7 @@ final class TunnelEngine {
         let plan: TunnelPlan
         do {
             plan = try planTunnel()
+            lastPlan = plan
         } catch {
             writeLog("plan failed: \(error.localizedDescription)")
             let reason = error.localizedDescription
@@ -102,7 +106,8 @@ final class TunnelEngine {
         let proxy = ProxyServer(
             listenPort: plan.proxyListenPort,
             targetHost: plan.proxyTargetHost,
-            targetPort: plan.proxyTargetPort
+            targetPort: plan.proxyTargetPort,
+            connectionId: connection.id
         )
         proxy.onBytes = { [weak self] dPT, dTP in
             self?.recordBytes(deltaProxyToTarget: dPT, deltaTargetToProxy: dTP)
@@ -273,7 +278,7 @@ final class TunnelEngine {
     /// On success returns the bound port and a running server.
     private func bringUpHttpProxy(socksPort: Int) throws -> (port: Int, server: HttpProxyServer) {
         if let explicit = connection.httpProxyPort {
-            let server = HttpProxyServer(listenPort: explicit, socksPort: socksPort)
+            let server = HttpProxyServer(listenPort: explicit, socksPort: socksPort, connectionId: connection.id)
             server.onListenerFailure = { [weak self] err in
                 DispatchQueue.main.async { self?.handleHttpProxyFailure(err) }
             }
@@ -288,7 +293,7 @@ final class TunnelEngine {
         for _ in 0..<maxAttempts {
             guard port <= 65535 else { break }
             tried += 1
-            let server = HttpProxyServer(listenPort: port, socksPort: socksPort)
+            let server = HttpProxyServer(listenPort: port, socksPort: socksPort, connectionId: connection.id)
             server.onListenerFailure = { [weak self] err in
                 DispatchQueue.main.async { self?.handleHttpProxyFailure(err) }
             }
@@ -384,8 +389,20 @@ final class TunnelEngine {
             _bytesDown &+= UInt64(deltaProxyToTarget)
             _bytesUp &+= UInt64(deltaTargetToProxy)
         }
+        let up = _bytesUp, down = _bytesDown
         statsLock.unlock()
+        DebugTrace.shared.trace(connection.id, "engine",
+                                "recordBytes(→target: \(deltaProxyToTarget), target→: \(deltaTargetToProxy)) totals up=\(up) down=\(down)")
     }
+
+    // MARK: - Debug introspection
+
+    /// Live facts about this engine for the debug report. Reads process/proxy
+    /// references, so call on the main queue (where all lifecycle runs).
+    var sshPid: Int32? { process?.processIdentifier }
+    var sshIsRunning: Bool { process?.isRunning ?? false }
+    func proxyDiagnostics() -> ProxyDiagnostics? { proxy?.diagnostics() }
+    func httpProxyDiagnostics() -> HttpProxyDiagnostics? { httpProxy?.diagnostics() }
 
     // MARK: - Planning
 

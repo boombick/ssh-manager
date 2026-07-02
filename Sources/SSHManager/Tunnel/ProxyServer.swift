@@ -1,6 +1,16 @@
 import Foundation
 import Network
 
+/// Point-in-time health snapshot of a ProxyServer, cheap enough to keep
+/// always-on. Answers "did the user's traffic ever reach us at all" — the
+/// first question when byte counters read zero.
+struct ProxyDiagnostics: Equatable {
+    var listenerState: String = "not started"
+    var acceptedTotal: UInt64 = 0
+    var activePairs: Int = 0
+    var onBytesCalls: UInt64 = 0
+}
+
 /// A tiny in-process TCP proxy: accepts on `listenPort`, dials `targetHost:targetPort`,
 /// and shovels bytes in both directions while counting them.
 ///
@@ -11,6 +21,9 @@ final class ProxyServer {
     let listenPort: Int
     let targetHost: String
     let targetPort: Int
+
+    /// Connection this proxy serves; used to route DebugTrace lines. Nil in tests.
+    let connectionId: UUID?
 
     /// Called from the proxy queue whenever bytes are copied.
     /// `deltaProxyToTarget` = bytes received from the accepted client and forwarded to the target.
@@ -24,10 +37,20 @@ final class ProxyServer {
     private let queue = DispatchQueue(label: "ssh-manager.proxy", qos: .userInitiated)
     private var listener: NWListener?
 
-    init(listenPort: Int, targetHost: String, targetPort: Int) {
+    private let diagLock = NSLock()
+    private var diag = ProxyDiagnostics()
+
+    init(listenPort: Int, targetHost: String, targetPort: Int, connectionId: UUID? = nil) {
         self.listenPort = listenPort
         self.targetHost = targetHost
         self.targetPort = targetPort
+        self.connectionId = connectionId
+    }
+
+    /// Thread-safe snapshot of listener state and traffic counters.
+    func diagnostics() -> ProxyDiagnostics {
+        diagLock.lock(); defer { diagLock.unlock() }
+        return diag
     }
 
     func start() throws {
@@ -46,9 +69,12 @@ final class ProxyServer {
             self?.accept(client: client)
         }
         listener.stateUpdateHandler = { [weak self] state in
+            guard let self else { return }
+            self.mutateDiag { $0.listenerState = "\(state)" }
+            self.trace("listener state: \(state) (port \(self.listenPort))")
             switch state {
             case .failed(let error):
-                self?.onListenerFailure?(error)
+                self.onListenerFailure?(error)
             default:
                 break
             }
@@ -64,12 +90,26 @@ final class ProxyServer {
 
     // MARK: - Private
 
+    private func mutateDiag(_ change: (inout ProxyDiagnostics) -> Void) {
+        diagLock.lock()
+        change(&diag)
+        diagLock.unlock()
+    }
+
+    private func trace(_ message: @autoclosure () -> String) {
+        guard let connectionId else { return }
+        DebugTrace.shared.trace(connectionId, "proxy", message())
+    }
+
     private func accept(client: NWConnection) {
         guard let raw = UInt16(exactly: targetPort), raw > 0,
               let targetNWPort = NWEndpoint.Port(rawValue: raw) else {
             client.cancel()
             return
         }
+        mutateDiag { $0.acceptedTotal += 1; $0.activePairs += 1 }
+        trace("accepted \(client.endpoint) → \(targetHost):\(targetPort)")
+
         let target = NWConnection(
             host: NWEndpoint.Host(targetHost),
             port: targetNWPort,
@@ -100,18 +140,37 @@ final class ProxyServer {
     }
 
     /// Tracks how many of the two pump directions for a connection-pair have
-    /// finished. Only touched on the proxy `queue`, so no locking is needed.
-    private final class PumpPair { var finished = 0 }
+    /// finished, plus per-pair byte totals for tracing. Only touched on the
+    /// proxy `queue`, so no locking is needed.
+    private final class PumpPair {
+        var finished = 0
+        var closedReported = false
+        var bytesProxyToTarget: UInt64 = 0
+        var bytesTargetToProxy: UInt64 = 0
+    }
+
+    /// Mark the pair closed exactly once (both directions done, or an error path).
+    private func reportClosed(_ pair: PumpPair, reason: String) {
+        guard !pair.closedReported else { return }
+        pair.closedReported = true
+        mutateDiag { $0.activePairs -= 1 }
+        trace("pair closed (\(reason)): →target \(pair.bytesProxyToTarget) B, target→ \(pair.bytesTargetToProxy) B")
+    }
 
     /// Recursive read-then-forward loop. Each `receive` callback is dispatched on the proxy queue,
     /// so recursion does not grow the call stack.
     private func pump(from src: NWConnection, to dst: NWConnection, direction: Direction, pair: PumpPair) {
         src.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, isComplete, error in
             if let data, !data.isEmpty {
+                self?.mutateDiag { $0.onBytesCalls += 1 }
                 switch direction {
                 case .proxyToTarget:
+                    pair.bytesProxyToTarget += UInt64(data.count)
+                    self?.trace("chunk →target \(data.count) B")
                     self?.onBytes?(data.count, 0)
                 case .targetToProxy:
+                    pair.bytesTargetToProxy += UInt64(data.count)
+                    self?.trace("chunk target→ \(data.count) B")
                     self?.onBytes?(0, data.count)
                 }
                 dst.send(content: data, completion: .contentProcessed { _ in })
@@ -127,6 +186,7 @@ final class ProxyServer {
                 if pair.finished == 2 {
                     src.cancel()
                     dst.cancel()
+                    self?.reportClosed(pair, reason: "both directions complete")
                 }
                 return
             }
@@ -134,6 +194,7 @@ final class ProxyServer {
             if error != nil {
                 src.cancel()
                 dst.cancel()
+                self?.reportClosed(pair, reason: "error: \(error!)")
                 return
             }
 

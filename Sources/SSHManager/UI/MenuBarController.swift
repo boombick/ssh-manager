@@ -75,6 +75,21 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
         menu.addItem(.separator())
 
+        let debugItem = NSMenuItem(title: "Debug Mode",
+                                   action: #selector(toggleDebugMode),
+                                   keyEquivalent: "")
+        debugItem.target = self
+        debugItem.state = DebugTrace.shared.isEnabled ? .on : .off
+        menu.addItem(debugItem)
+
+        let reportItem = NSMenuItem(title: "Save Debug Report…",
+                                    action: #selector(saveDebugReport),
+                                    keyEquivalent: "")
+        reportItem.target = self
+        menu.addItem(reportItem)
+
+        menu.addItem(.separator())
+
         let quitItem = NSMenuItem(title: "Quit SSH Manager",
                                   action: #selector(NSApplication.terminate(_:)),
                                   keyEquivalent: "q")
@@ -125,5 +140,24 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
     @objc private func openLogs() {
         NSWorkspace.shared.open(Paths.logsDirectory)
+    }
+
+    @objc private func toggleDebugMode() {
+        DebugTrace.shared.setEnabled(!DebugTrace.shared.isEnabled)
+    }
+
+    @objc private func saveDebugReport() {
+        do {
+            let url = try DebugReport.save(supervisor: supervisor)
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        } catch {
+            NSLog("SSHManager: debug report failed: \(error)")
+            let alert = NSAlert()
+            alert.messageText = "Could not save debug report"
+            alert.informativeText = error.localizedDescription
+            alert.alertStyle = .warning
+            NSApp.activate(ignoringOtherApps: true)
+            alert.runModal()
+        }
     }
 }
