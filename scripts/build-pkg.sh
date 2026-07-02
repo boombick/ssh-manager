@@ -21,6 +21,10 @@ ditto --norsrc --noextattr --noacl SSHManager.app "${PKG_ROOT}/Applications/SSHM
 # Re-apply the ad-hoc signature (it lives inside the Mach-O, but the bundle's
 # _CodeSignature/CodeResources references xattrs we just stripped).
 codesign --force --sign - "${PKG_ROOT}/Applications/SSHManager.app" >/dev/null 2>&1 || true
+# Strip what xattrs we can from the staged copy. com.apple.provenance is
+# system-managed and survives this, so the payload still carries a few
+# AppleDouble (._*) entries — harmless, and present in all past releases.
+xattr -rc "${PKG_ROOT}" 2>/dev/null || true
 
 echo "==> pkgbuild → ${PKG_OUT}"
 pkgbuild \
