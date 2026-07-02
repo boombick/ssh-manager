@@ -13,15 +13,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let store = ConfigStore()
-        let connections: [Connection]
+        let config: AppConfig
         do {
-            connections = try store.load()
+            config = try store.load()
         } catch {
             NSLog("SSHManager: failed to load config: \(error). Starting with empty list.")
-            connections = []
+            config = AppConfig()
         }
 
-        supervisor = TunnelSupervisor(store: store, connections: connections)
+        supervisor = TunnelSupervisor(store: store, config: config)
         mainWindow = MainWindowController(supervisor: supervisor)
         menuBar = MenuBarController(supervisor: supervisor) { [weak self] in
             self?.mainWindow.show()

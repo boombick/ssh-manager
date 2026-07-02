@@ -16,9 +16,17 @@ final class TunnelSupervisor: ObservableObject {
     let history: HistoryStore?
     private var lastByteSnapshot: [UUID: ByteCounters] = [:]
 
-    init(store: ConfigStore, connections: [Connection]) {
+    // Master port: one fixed local port forwarding into the selected
+    // connection's own SOCKS listener. Selection persists in config.json.
+    private(set) var masterPort: Int
+    @Published private(set) var masterConnectionId: UUID?
+    private var masterProxy: ProxyServer?
+
+    init(store: ConfigStore, config: AppConfig) {
         self.store = store
-        self.connections = connections
+        self.connections = config.connections
+        self.masterPort = config.masterPort
+        self.masterConnectionId = config.masterConnectionId
 
         // History is best-effort. If the DB can't open we keep running without it.
         var openedHistory: HistoryStore?
@@ -36,6 +44,7 @@ final class TunnelSupervisor: ObservableObject {
         for c in connections {
             installEngine(for: c, startIfAuto: true)
         }
+        restoreMasterSelection()
         startStatsTimer()
         startPingMonitor()
     }
@@ -155,6 +164,123 @@ final class TunnelSupervisor: ObservableObject {
         engines[id]?.retryNow()
     }
 
+    // MARK: - Master port
+
+    enum MasterPortError: LocalizedError {
+        case portCollision(port: Int, connectionName: String)
+        case bindFailed(port: Int, underlying: Error)
+
+        var errorDescription: String? {
+            switch self {
+            case .portCollision(let port, let name):
+                return "Master port \(port) is already used as the listen port of “\(name)”. Change masterPort in config.json."
+            case .bindFailed(let port, let underlying):
+                return "Cannot bind master port \(port): \(underlying.localizedDescription)"
+            }
+        }
+    }
+
+    /// Point the master port at connection `id` (nil = off): start its engine
+    /// if needed, drop all in-flight master connections, persist the choice.
+    func selectMaster(id: UUID?) throws {
+        tearDownMasterProxy()
+
+        guard let id, let c = connections.first(where: { $0.id == id }), c.type == .dynamic else {
+            masterConnectionId = nil
+            persistConfig()
+            return
+        }
+
+        // Selecting a connection means "route my traffic through it now" —
+        // bring the tunnel up if it's down.
+        if let e = engines[id] {
+            switch e.state {
+            case .stopped, .failed:        e.start()
+            case .running, .reconnecting:  break
+            }
+        }
+
+        do {
+            try bringUpMasterProxy(target: c)
+        } catch {
+            masterConnectionId = nil
+            persistConfig()
+            throw error
+        }
+        masterConnectionId = id
+        persistConfig()
+    }
+
+    func masterDiagnostics() -> ProxyDiagnostics? {
+        masterProxy?.diagnostics()
+    }
+
+    /// Bind the master listener at the (possibly new) target. Does not touch
+    /// engine lifecycles — selectMaster / updateConnection own that part.
+    private func bringUpMasterProxy(target: Connection) throws {
+        // The default master port equals the default SOCKS port (1080) — catch
+        // that footgun before NWListener reports it asynchronously.
+        if let clash = connections.first(where: { $0.listenPort == masterPort }) {
+            throw MasterPortError.portCollision(port: masterPort, connectionName: clash.name)
+        }
+
+        let proxy = ProxyServer(
+            listenPort: masterPort,
+            targetHost: "127.0.0.1",
+            targetPort: target.listenPort
+        )
+        proxy.onListenerFailure = { [weak self] error in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                NSLog("SSHManager: master port listener failed: \(error)")
+                self.tearDownMasterProxy()
+                self.masterConnectionId = nil
+                self.persistConfig()
+            }
+        }
+        do {
+            try proxy.start()
+        } catch {
+            throw MasterPortError.bindFailed(port: masterPort, underlying: error)
+        }
+        masterProxy = proxy
+    }
+
+    private func tearDownMasterProxy() {
+        masterProxy?.cancelActivePairs()
+        masterProxy?.stop()
+        masterProxy = nil
+    }
+
+    private var currentConfig: AppConfig {
+        AppConfig(masterPort: masterPort,
+                  masterConnectionId: masterConnectionId,
+                  connections: connections)
+    }
+
+    private func saveConfig() throws {
+        try store.save(currentConfig)
+    }
+
+    /// For paths that cannot propagate errors (async callbacks). A failed
+    /// write leaves the previous config on disk — recoverable, so just log.
+    private func persistConfig() {
+        do { try saveConfig() } catch {
+            NSLog("SSHManager: config save failed: \(error)")
+        }
+    }
+
+    /// Re-apply a persisted selection at startup / after reload. Invalid or
+    /// failing selections are cleared so config and reality stay in sync.
+    private func restoreMasterSelection() {
+        guard let id = masterConnectionId else { return }
+        do {
+            try selectMaster(id: id)
+        } catch {
+            NSLog("SSHManager: master port restore failed: \(error.localizedDescription)")
+        }
+    }
+
     /// Остановка при выходе из приложения. Событие `.stopped` пишется из
     /// асинхронного handleTermination, который не успевает до завершения
     /// процесса — поэтому фиксируем `.stopped` синхронно здесь и дожидаемся
@@ -169,6 +295,7 @@ final class TunnelSupervisor: ObservableObject {
             }
             e.stop()
         }
+        masterProxy?.stop()
         history?.flush()
     }
 
@@ -176,7 +303,7 @@ final class TunnelSupervisor: ObservableObject {
 
     func addConnection(_ c: Connection) throws {
         connections.append(c)
-        try store.save(connections)
+        try saveConfig()
         installEngine(for: c, startIfAuto: c.autoStart)
         notifyChanged()
     }
@@ -184,7 +311,8 @@ final class TunnelSupervisor: ObservableObject {
     func updateConnection(_ c: Connection) throws {
         guard let idx = connections.firstIndex(where: { $0.id == c.id }) else { return }
         connections[idx] = c
-        try store.save(connections)
+        try saveConfig()
+        repointMasterIfNeeded(after: c)
 
         let oldEngine = engines[c.id]
         let wasActive: Bool
@@ -223,6 +351,10 @@ final class TunnelSupervisor: ObservableObject {
     }
 
     func deleteConnection(id: UUID) throws {
+        if masterConnectionId == id {
+            tearDownMasterProxy()
+            masterConnectionId = nil
+        }
         if let e = engines[id] {
             e.stop()
             engines.removeValue(forKey: id)
@@ -230,8 +362,28 @@ final class TunnelSupervisor: ObservableObject {
         connections.removeAll { $0.id == id }
         lastByteSnapshot.removeValue(forKey: id)
         httpPorts.removeValue(forKey: id)
-        try store.save(connections)
+        try saveConfig()
         notifyChanged()
+    }
+
+    /// After a connection edit: the master target's listen port or type may
+    /// have changed. Re-point (or drop) the master proxy; engine lifecycle is
+    /// already handled by updateConnection's stop-then-start sequencing.
+    private func repointMasterIfNeeded(after c: Connection) {
+        guard masterConnectionId == c.id else { return }
+        tearDownMasterProxy()
+        guard c.type == .dynamic else {
+            masterConnectionId = nil
+            persistConfig()
+            return
+        }
+        do {
+            try bringUpMasterProxy(target: c)
+        } catch {
+            NSLog("SSHManager: master port re-point failed: \(error.localizedDescription)")
+            masterConnectionId = nil
+            persistConfig()
+        }
     }
 
     // MARK: - External edits
@@ -239,13 +391,14 @@ final class TunnelSupervisor: ObservableObject {
     /// Re-read config.json from disk. Running engines keep their existing params;
     /// to apply parameter changes from a manual edit the user must stop+start.
     func reload() {
-        let fresh: [Connection]
+        let freshConfig: AppConfig
         do {
-            fresh = try store.load()
+            freshConfig = try store.load()
         } catch {
             NSLog("SSHManager: reload failed: \(error)")
             return
         }
+        let fresh = freshConfig.connections
 
         let newIDs = Set(fresh.map { $0.id })
 
@@ -259,6 +412,13 @@ final class TunnelSupervisor: ObservableObject {
         }
 
         connections = fresh
+
+        // Master settings may have been edited by hand — re-apply from scratch.
+        tearDownMasterProxy()
+        masterPort = freshConfig.masterPort
+        masterConnectionId = freshConfig.masterConnectionId
+        restoreMasterSelection()
+
         notifyChanged()
     }
 

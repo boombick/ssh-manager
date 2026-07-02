@@ -36,6 +36,7 @@ final class DebugReportTests: XCTestCase {
             appVersion: "0.4.1 (7)",
             osVersion: "macOS 15.5",
             debugModeEnabled: true,
+            masterPort: "port 1080 → work-socks  listener=ready  accepted=5  active=1",
             configJSON: "{\"connections\": []}",
             connections: connections,
             portScans: portScans,
@@ -48,6 +49,7 @@ final class DebugReportTests: XCTestCase {
         XCTAssertTrue(text.contains("SSH Manager Debug Report"))
         XCTAssertTrue(text.contains("app:        0.4.1 (7)"))
         XCTAssertTrue(text.contains("debug mode: ON"))
+        XCTAssertTrue(text.contains("master:     port 1080 → work-socks"))
         XCTAssertTrue(text.contains("{\"connections\": []}"))
     }
 

@@ -55,6 +55,74 @@ final class ProxyDiagnosticsTests: XCTestCase {
         target.cancel()
     }
 
+    /// cancelActivePairs (used by the master port on switch) must drop
+    /// established pairs: the client sees its connection die.
+    func testCancelActivePairsDropsEstablishedConnections() throws {
+        let queue = DispatchQueue(label: "test.proxy-cancel")
+
+        let targetParams = NWParameters.tcp
+        targetParams.requiredLocalEndpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: 0)
+        let target = try NWListener(using: targetParams)
+        target.newConnectionHandler = { conn in
+            conn.start(queue: queue)
+            conn.receive(minimumIncompleteLength: 1, maximumLength: 1024) { _, _, _, _ in }
+        }
+        let targetReady = expectation(description: "target ready")
+        target.stateUpdateHandler = { if case .ready = $0 { targetReady.fulfill() } }
+        target.start(queue: queue)
+        wait(for: [targetReady], timeout: 5)
+
+        let proxyPort = try Self.freePort()
+        let proxy = ProxyServer(listenPort: proxyPort, targetHost: "127.0.0.1",
+                                targetPort: Int(target.port!.rawValue))
+        try proxy.start()
+
+        let client = NWConnection(host: "127.0.0.1",
+                                  port: NWEndpoint.Port(rawValue: UInt16(proxyPort))!,
+                                  using: .tcp)
+        let clientDead = expectation(description: "client connection dropped")
+        client.stateUpdateHandler = { state in
+            if case .ready = state {
+                // Push a byte so the pair definitely registers before we cancel.
+                client.send(content: Data("x".utf8), completion: .contentProcessed { _ in })
+                // Peer close doesn't flip NWConnection state by itself —
+                // it surfaces as isComplete/error on a pending receive.
+                client.receive(minimumIncompleteLength: 1, maximumLength: 1024) { _, _, isComplete, error in
+                    if isComplete || error != nil { clientDead.fulfill() }
+                }
+            }
+        }
+        client.start(queue: queue)
+
+        // Wait until the proxy registered the pair, then hard-switch.
+        let registered = expectation(description: "pair registered")
+        pollUntil(queue: queue, timeout: 5, check: { proxy.diagnostics().activePairs == 1 },
+                  done: registered)
+        wait(for: [registered], timeout: 5)
+
+        proxy.cancelActivePairs()
+        wait(for: [clientDead], timeout: 5)
+
+        let drained = expectation(description: "activePairs back to 0")
+        pollUntil(queue: queue, timeout: 5, check: { proxy.diagnostics().activePairs == 0 },
+                  done: drained)
+        wait(for: [drained], timeout: 5)
+
+        proxy.stop()
+        target.cancel()
+    }
+
+    private func pollUntil(queue: DispatchQueue, timeout: TimeInterval,
+                           check: @escaping () -> Bool, done: XCTestExpectation) {
+        let deadline = Date().addingTimeInterval(timeout)
+        func tick() {
+            if check() { done.fulfill(); return }
+            guard Date() < deadline else { return }
+            queue.asyncAfter(deadline: .now() + 0.05) { tick() }
+        }
+        queue.async { tick() }
+    }
+
     /// Bind port 0, read back the kernel-assigned port, release it.
     private static func freePort() throws -> Int {
         let sock = socket(AF_INET, SOCK_STREAM, 0)

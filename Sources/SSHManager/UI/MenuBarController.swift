@@ -48,6 +48,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         }
 
         menu.addItem(.separator())
+        addMasterPortSubmenu(to: menu)
+        menu.addItem(.separator())
 
         let manageItem = NSMenuItem(title: "Manage Connections…",
                                     action: #selector(openWindow),
@@ -121,9 +123,61 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         return line
     }
 
+    /// "Master Port :1080 → work" submenu: radio list of SOCKS connections
+    /// plus Off. One click re-points the master port.
+    private func addMasterPortSubmenu(to menu: NSMenu) {
+        let selected = supervisor.masterConnectionId
+        let selectedName = supervisor.connections.first { $0.id == selected }?.name
+
+        let title = "Master Port :\(supervisor.masterPort) → \(selectedName ?? "Off")"
+        let rootItem = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+
+        let offItem = NSMenuItem(title: "Off",
+                                 action: #selector(selectMasterTarget(_:)),
+                                 keyEquivalent: "")
+        offItem.target = self
+        offItem.state = selected == nil ? .on : .off
+        submenu.addItem(offItem)
+        submenu.addItem(.separator())
+
+        let candidates = supervisor.connections.filter { $0.type == .dynamic }
+        if candidates.isEmpty {
+            let empty = NSMenuItem(title: "No SOCKS connections", action: nil, keyEquivalent: "")
+            empty.isEnabled = false
+            submenu.addItem(empty)
+        }
+        for c in candidates {
+            let item = NSMenuItem(title: "\(c.name)  ·  :\(c.listenPort)",
+                                  action: #selector(selectMasterTarget(_:)),
+                                  keyEquivalent: "")
+            item.target = self
+            item.representedObject = c.id
+            item.state = c.id == selected ? .on : .off
+            submenu.addItem(item)
+        }
+
+        rootItem.submenu = submenu
+        menu.addItem(rootItem)
+    }
+
     @objc private func toggleConnection(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? UUID else { return }
         supervisor.toggle(id: id)
+    }
+
+    @objc private func selectMasterTarget(_ sender: NSMenuItem) {
+        let id = sender.representedObject as? UUID
+        do {
+            try supervisor.selectMaster(id: id)
+        } catch {
+            let alert = NSAlert()
+            alert.messageText = "Master port switch failed"
+            alert.informativeText = error.localizedDescription
+            alert.alertStyle = .warning
+            NSApp.activate(ignoringOtherApps: true)
+            alert.runModal()
+        }
     }
 
     @objc private func openWindow() {

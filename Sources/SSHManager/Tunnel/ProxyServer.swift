@@ -37,6 +37,11 @@ final class ProxyServer {
     private let queue = DispatchQueue(label: "ssh-manager.proxy", qos: .userInitiated)
     private var listener: NWListener?
 
+    /// Live connection pairs, keyed by their PumpPair identity. Only touched
+    /// on the proxy `queue`. Needed so the master port can hard-switch: drop
+    /// everything mid-flight instead of letting old flows drain.
+    private var livePairs: [ObjectIdentifier: (src: NWConnection, dst: NWConnection)] = [:]
+
     private let diagLock = NSLock()
     private var diag = ProxyDiagnostics()
 
@@ -88,6 +93,21 @@ final class ProxyServer {
         listener = nil
     }
 
+    /// Cancel every in-flight connection pair. stop() leaves accepted
+    /// connections draining (right for tunnels); the master port calls this
+    /// on switch so no traffic keeps flowing to the previous target.
+    func cancelActivePairs() {
+        queue.async { [self] in
+            trace("cancelling \(livePairs.count) active pair(s)")
+            for (_, pair) in livePairs {
+                pair.src.cancel()
+                pair.dst.cancel()
+            }
+            // reportClosed fires from the pumps' error/cancel paths and
+            // clears livePairs / activePairs per pair.
+        }
+    }
+
     // MARK: - Private
 
     private func mutateDiag(_ change: (inout ProxyDiagnostics) -> Void) {
@@ -130,6 +150,7 @@ final class ProxyServer {
         target.start(queue: queue)
 
         let pair = PumpPair()
+        livePairs[ObjectIdentifier(pair)] = (src: client, dst: target)
         pump(from: client, to: target, direction: .proxyToTarget, pair: pair)
         pump(from: target, to: client, direction: .targetToProxy, pair: pair)
     }
@@ -150,9 +171,11 @@ final class ProxyServer {
     }
 
     /// Mark the pair closed exactly once (both directions done, or an error path).
+    /// Runs on the proxy queue (from pump callbacks), so livePairs is safe to touch.
     private func reportClosed(_ pair: PumpPair, reason: String) {
         guard !pair.closedReported else { return }
         pair.closedReported = true
+        livePairs.removeValue(forKey: ObjectIdentifier(pair))
         mutateDiag { $0.activePairs -= 1 }
         trace("pair closed (\(reason)): →target \(pair.bytesProxyToTarget) B, target→ \(pair.bytesTargetToProxy) B")
     }

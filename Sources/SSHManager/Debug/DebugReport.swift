@@ -32,6 +32,7 @@ enum DebugReport {
         appVersion: String,
         osVersion: String,
         debugModeEnabled: Bool,
+        masterPort: String,
         configJSON: String,
         connections: [ConnectionInfo],
         portScans: [(port: Int, output: String)],
@@ -45,6 +46,7 @@ enum DebugReport {
         out.append("app:        \(appVersion)")
         out.append("macOS:      \(osVersion)")
         out.append("debug mode: \(debugModeEnabled ? "ON" : "OFF")")
+        out.append("master:     \(masterPort)")
         out.append("")
 
         out.append(section("config.json"))
@@ -141,6 +143,17 @@ enum DebugReport {
             }
         }
 
+        let masterDescription: String
+        if let selected = supervisor.masterConnectionId,
+           let name = supervisor.connections.first(where: { $0.id == selected })?.name {
+            let d = supervisor.masterDiagnostics()
+            masterDescription = "port \(supervisor.masterPort) → \(name)"
+                + "  listener=\(d?.listenerState ?? "?")  accepted=\(d?.acceptedTotal ?? 0)  active=\(d?.activePairs ?? 0)"
+            ports.insert(supervisor.masterPort)
+        } else {
+            masterDescription = "port \(supervisor.masterPort) — off"
+        }
+
         let scans = ports.sorted().map { (port: $0, output: lsof(port: $0)) }
 
         let bundle = Bundle.main
@@ -153,6 +166,7 @@ enum DebugReport {
             appVersion: appVersion,
             osVersion: ProcessInfo.processInfo.operatingSystemVersionString,
             debugModeEnabled: DebugTrace.shared.isEnabled,
+            masterPort: masterDescription,
             configJSON: (try? String(contentsOf: Paths.configFile, encoding: .utf8)) ?? "",
             connections: infos,
             portScans: scans,
