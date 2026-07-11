@@ -215,9 +215,8 @@ final class TunnelSupervisor: ObservableObject {
     /// Point the master port at connection `id` (nil = off): start its engine
     /// if needed, drop all in-flight master connections, persist the choice.
     func selectMaster(id: UUID?) throws {
-        tearDownMasterProxy()
-
         guard let id, let c = connections.first(where: { $0.id == id }), c.type == .dynamic else {
+            tearDownMasterProxy()
             masterConnectionId = nil
             persistConfig()
             return
@@ -233,8 +232,9 @@ final class TunnelSupervisor: ObservableObject {
         }
 
         do {
-            try bringUpMasterProxy(target: c)
+            try repointMasterProxy(to: c)
         } catch {
+            tearDownMasterProxy()
             masterConnectionId = nil
             persistConfig()
             throw error
@@ -245,6 +245,21 @@ final class TunnelSupervisor: ObservableObject {
 
     func masterDiagnostics() -> ProxyDiagnostics? {
         masterProxy?.diagnostics()
+    }
+
+    /// Aim the master port at `target`, reusing the live listener when there is
+    /// one: tearing it down and re-binding the same port races with the async
+    /// listener cancel (EADDRINUSE → onListenerFailure → reset to Off).
+    private func repointMasterProxy(to target: Connection) throws {
+        if let clash = connections.first(where: { $0.listenPort == masterPort }) {
+            throw MasterPortError.portCollision(port: masterPort, connectionName: clash.name)
+        }
+        if let proxy = masterProxy {
+            proxy.cancelActivePairs()
+            proxy.retarget(port: target.listenPort)
+        } else {
+            try bringUpMasterProxy(target: target)
+        }
     }
 
     /// Bind the master listener at the (possibly new) target. Does not touch
@@ -261,9 +276,11 @@ final class TunnelSupervisor: ObservableObject {
             targetHost: "127.0.0.1",
             targetPort: target.listenPort
         )
-        proxy.onListenerFailure = { [weak self] error in
+        proxy.onListenerFailure = { [weak self, weak proxy] error in
             DispatchQueue.main.async {
-                guard let self else { return }
+                // A failure from a proxy we already replaced must not tear
+                // down its successor.
+                guard let self, self.masterProxy === proxy else { return }
                 NSLog("SSHManager: master port listener failed: \(error)")
                 self.tearDownMasterProxy()
                 self.masterConnectionId = nil
@@ -403,16 +420,17 @@ final class TunnelSupervisor: ObservableObject {
     /// already handled by updateConnection's stop-then-start sequencing.
     private func repointMasterIfNeeded(after c: Connection) {
         guard masterConnectionId == c.id else { return }
-        tearDownMasterProxy()
         guard c.type == .dynamic else {
+            tearDownMasterProxy()
             masterConnectionId = nil
             persistConfig()
             return
         }
         do {
-            try bringUpMasterProxy(target: c)
+            try repointMasterProxy(to: c)
         } catch {
             NSLog("SSHManager: master port re-point failed: \(error.localizedDescription)")
+            tearDownMasterProxy()
             masterConnectionId = nil
             persistConfig()
         }
@@ -445,8 +463,12 @@ final class TunnelSupervisor: ObservableObject {
 
         connections = fresh
 
-        // Master settings may have been edited by hand — re-apply from scratch.
-        tearDownMasterProxy()
+        // Master settings may have been edited by hand — re-apply. Keep the
+        // live listener when the port is unchanged (same-port re-bind races
+        // with the async cancel); restoreMasterSelection retargets it.
+        if freshConfig.masterPort != masterPort || freshConfig.masterConnectionId == nil {
+            tearDownMasterProxy()
+        }
         masterPort = freshConfig.masterPort
         masterConnectionId = freshConfig.masterConnectionId
         restoreMasterSelection()

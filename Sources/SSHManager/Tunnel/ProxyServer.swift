@@ -20,7 +20,7 @@ struct ProxyDiagnostics: Equatable {
 final class ProxyServer {
     let listenPort: Int
     let targetHost: String
-    let targetPort: Int
+    private(set) var targetPort: Int
 
     /// Connection this proxy serves; used to route DebugTrace lines. Nil in tests.
     let connectionId: UUID?
@@ -91,6 +91,18 @@ final class ProxyServer {
     func stop() {
         listener?.cancel()
         listener = nil
+    }
+
+    /// Point newly accepted connections at a different target port, keeping the
+    /// listener alive. Re-binding the same listen port races with the previous
+    /// listener's async cancel (EADDRINUSE), so the master port switches targets
+    /// this way instead. In-flight pairs keep their old target — pair with
+    /// cancelActivePairs().
+    func retarget(port: Int) {
+        queue.async {
+            self.trace("retarget → \(self.targetHost):\(port)")
+            self.targetPort = port
+        }
     }
 
     /// Cancel every in-flight connection pair. stop() leaves accepted
